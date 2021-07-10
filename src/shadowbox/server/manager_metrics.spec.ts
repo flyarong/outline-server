@@ -1,4 +1,4 @@
-// Copyright 2018 The Outline Authors
+// Copyright 2019 The Outline Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,36 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {ManualClock} from '../infrastructure/clock';
-import {InMemoryConfig} from '../infrastructure/json_config';
+import {PrometheusClient, QueryResultData} from '../infrastructure/prometheus_scraper';
+import {DataUsageByUser} from '../model/metrics';
+import {PrometheusManagerMetrics} from './manager_metrics';
+import {FakePrometheusClient} from './mocks/mocks';
 
-import {LegacyManagerMetrics, LegacyManagerMetricsJson} from './manager_metrics';
-
-describe('ManagerMetrics', () => {
-  it('Saves traffic to config', async (done) => {
-    const config = new InMemoryConfig({} as LegacyManagerMetricsJson);
-    const clock = new ManualClock();
-    const startTime = clock.now();
-    const metrics = new LegacyManagerMetrics(clock, config);
-
-    let report = await metrics.get30DayByteTransfer();
-    expect(report.bytesTransferredByUserId).toEqual({});
-
-    for (let di = 0; di < 40; di++) {
-      clock.nowMs = startTime + di * 24 * 60 * 60 * 1000;
-      metrics.writeBytesTransferred('user-0', 1);
-    }
-    report = await metrics.get30DayByteTransfer();
-    // This is being dropped
-    expect(report.bytesTransferredByUserId).toEqual({'user-0': 30});
-    // We are not cleaning this from the config.
-    expect(config.mostRecentWrite.userIdSet).toEqual(['user-0']);
-    expect(Object.keys(config.mostRecentWrite.dailyUserBytesTransferred).length).toEqual(40);
-
-    expect(await new LegacyManagerMetrics(clock, new InMemoryConfig(config.mostRecentWrite))
-               .get30DayByteTransfer())
-        .toEqual(report);
-
+describe('PrometheusManagerMetrics', () => {
+  it('getOutboundByteTransfer', async (done) => {
+    const managerMetrics = new PrometheusManagerMetrics(
+        new FakePrometheusClient({'access-key-1': 1000, 'access-key-2': 10000}));
+    const dataUsage = await managerMetrics.getOutboundByteTransfer({hours: 0});
+    const bytesTransferredByUserId = dataUsage.bytesTransferredByUserId;
+    expect(Object.keys(bytesTransferredByUserId).length).toEqual(2);
+    expect(bytesTransferredByUserId['access-key-1']).toEqual(1000);
+    expect(bytesTransferredByUserId['access-key-2']).toEqual(10000);
     done();
   });
 });

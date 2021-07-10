@@ -12,50 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1-alpine as outline-ss-server
-RUN apk add --no-cache git
-RUN go get github.com/Jigsaw-Code/outline-ss-server
+ARG NODE_IMAGE
 
-# See versions at https://hub.docker.com/_/node/
-FROM node:8.11.3-alpine
+# Multi-stage build: use a build image to prevent bloating the shadowbox image with dependencies.
+# Run `yarn` and build inside the container to package the right dependencies for the image.
+FROM ${NODE_IMAGE} AS build
 
-# Versions can be found at https://github.com/shadowsocks/shadowsocks-libev/releases
-ARG SS_VERSION=3.2.0
+RUN apk add --no-cache --upgrade bash
+WORKDIR /
+
+# Don't copy node_modules and other things not needed for install.
+COPY package.json yarn.lock ./
+COPY src/shadowbox/package.json src/shadowbox/
+RUN yarn install
+
+# We copy the source code only after yarn install, so that source code changes don't trigger re-installs.
+COPY scripts scripts/
+COPY src src/
+COPY tsconfig.json ./
+COPY third_party third_party
+RUN ROOT_DIR=/ yarn do shadowbox/server/build
+
+# shadowbox image
+FROM ${NODE_IMAGE}
 
 # Save metadata on the software versions we are using.
-LABEL shadowbox.node_version=8.11.3
-LABEL shadowbox.shadowsocks_version="${SS_VERSION}"
+LABEL shadowbox.node_version=12.16.3
 
 ARG GITHUB_RELEASE
 LABEL shadowbox.github.release="${GITHUB_RELEASE}"
 
-# lsof for Shadowbox, curl for detecting our public IP.
-RUN apk add --no-cache lsof curl
+# We use curl to detect the server's public IP. We need to use the --date option in `date` to
+# safely grab the ip-to-country database
+RUN apk add --no-cache --upgrade coreutils curl
 
 COPY src/shadowbox/scripts scripts/
 COPY src/shadowbox/scripts/update_mmdb.sh /etc/periodic/weekly/update_mmdb
-# TODO: remove the ACL file, used to prevent access to localhost and LAN, when migrating to shadowsocks-go.
-COPY src/shadowbox/shadowbox.acl /root/shadowbox/shadowsocks.acl
 
-RUN sh ./scripts/install_shadowsocks.sh $SS_VERSION
 RUN /etc/periodic/weekly/update_mmdb
-
-WORKDIR /root/shadowbox
-
-COPY --from=outline-ss-server /go/bin/outline-ss-server ./bin/
-COPY third_party/prometheus/prometheus ./bin/
-COPY src/shadowbox/package.json .
-COPY yarn.lock .
-# TODO: Replace with plain old "yarn" once the base image is fixed:
-#       https://github.com/nodejs/docker-node/pull/639
-RUN /opt/yarn-v$YARN_VERSION/bin/yarn install --prod
-
-# Install management service
-COPY build/shadowbox/app app/
 
 # Create default state directory.
 RUN mkdir -p /root/shadowbox/persisted-state
 
-COPY src/shadowbox/docker/cmd.sh /
+# Install shadowbox.
+WORKDIR /opt/outline-server
 
+# The shadowbox build directory has the following structure:
+#   - app/          (bundled node app)
+#   - bin/          (binary dependencies)
+#   - package.json  (shadowbox package.json)
+COPY --from=build /build/shadowbox/ .
+
+COPY src/shadowbox/docker/cmd.sh /
 CMD /cmd.sh

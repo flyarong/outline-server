@@ -18,13 +18,14 @@
 # in a Docker container. *Building* is not supported by that Docker image
 # so we build separately.
 
-$ROOT_DIR/src/server_manager/node_modules/.bin/electron-builder \
+"${ROOT_DIR}/src/server_manager/node_modules/.bin/electron-builder" \
   --projectDir=build/server_manager/electron_app/static \
   --config.asarUnpack=server_manager/web_app/images \
+  --config.generateUpdatesFilesForAllChannels=true \
   --publish=never \
   --config.publish.provider=generic \
   --config.publish.url=https://raw.githubusercontent.com/Jigsaw-Code/outline-releases/master/manager/ \
   --ia32 \
   --win nsis \
   --config.win.icon=icons/win/icon.ico \
-  --config.artifactName='Outline-Manager.${ext}'
+  --config.artifactName="Outline-Manager.\${ext}"

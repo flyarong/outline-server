@@ -15,22 +15,16 @@
 import {EventEmitter} from 'eventemitter3';
 
 import {DigitalOceanSession, DropletInfo} from '../cloud/digitalocean_api';
-import * as crypto from '../infrastructure/crypto';
 import * as errors from '../infrastructure/errors';
 import {asciiToHex, hexToString} from '../infrastructure/hex_encoding';
-import * as do_install_script from '../install_scripts/do_install_script';
+import { Region } from '../model/digitalocean';
+import {CloudLocation} from '../model/location';
 import * as server from '../model/server';
 
 import {ShadowboxServer} from './shadowbox_server';
 
-// WARNING: these strings must be lowercase due to a DigitalOcean case
-// sensitivity bug.
-
-// Tag used to mark Shadowbox Droplets.
-const SHADOWBOX_TAG = 'shadowbox';
 // Prefix used in key-value tags.
 const KEY_VALUE_TAG = 'kv';
-
 // The tag key for the manager API certificate fingerprint.
 const CERTIFICATE_FINGERPRINT_TAG = 'certsha256';
 // The tag key for the manager API URL.
@@ -38,7 +32,7 @@ const API_URL_TAG = 'apiurl';
 // The tag which appears if there is an error during installation.
 const INSTALL_ERROR_TAG = 'install-error';
 
-// These are superceded by the API_URL_TAG
+// These are superseded by the API_URL_TAG
 // The tag key for the manager API port.
 const DEPRECATED_API_PORT_TAG = 'apiport';
 // The tag key for the manager API url prefix.
@@ -52,21 +46,6 @@ function makeKeyValueTag(key: string, value: string) {
   return [KEY_VALUE_TAG, key, asciiToHex(value)].join(':');
 }
 
-const cityEnglishNameById: {[key: string]: string} = {
-  ams: 'Amsterdam',
-  sgp: 'Singapore',
-  blr: 'Bangalore',
-  fra: 'Frankfurt',
-  lon: 'London',
-  sfo: 'San Francisco',
-  tor: 'Toronto',
-  nyc: 'New York'
-};
-
-// Returns a name for a server in the given region.
-export function MakeEnglishNameForServer(regionId: server.RegionId) {
-  return `Outline Server ${cityEnglishNameById[getCityId(regionId)]}`;
-}
 
 // Possible install states for DigitaloceanServer.
 enum InstallState {
@@ -80,31 +59,21 @@ enum InstallState {
   DELETED
 }
 
-class DigitaloceanServer extends ShadowboxServer implements server.ManagedServer {
+export class DigitalOceanServer extends ShadowboxServer implements server.ManagedServer {
   private eventQueue = new EventEmitter();
   private installState: InstallState = InstallState.UNKNOWN;
 
-  constructor(private digitalOcean: DigitalOceanSession, private dropletInfo: DropletInfo) {
+  constructor(
+      id: string, private digitalOcean: DigitalOceanSession, private dropletInfo: DropletInfo) {
     // Consider passing a RestEndpoint object to the parent constructor,
     // to better encapsulate the management api address logic.
-    super();
+    super(id);
     console.info('DigitalOceanServer created');
     this.eventQueue.once('server-active', () => console.timeEnd('activeServer'));
-    this.waitOnInstall(true)
-        .then(() => {
-          this.setInstallCompleted();
-        })
-        .catch((e) => {
-          console.error(`error installing server: ${e.message}`);
-        });
+    this.pollInstallState();
   }
 
-  waitOnInstall(resetTimeout: boolean): Promise<void> {
-    if (resetTimeout) {
-      this.installState = InstallState.UNKNOWN;
-      this.refreshInstallState();
-    }
-
+  waitOnInstall(): Promise<void> {
     return new Promise((fulfill, reject) => {
       // Poll this.installState for changes.  This can poll quickly as it
       // will not make any network requests.
@@ -113,24 +82,10 @@ class DigitaloceanServer extends ShadowboxServer implements server.ManagedServer
           // installState not known, wait until next retry.
           return;
         }
-
         // State is now known, so we can stop checking.
         clearInterval(intervalId);
         if (this.installState === InstallState.SUCCESS) {
-          // Verify that the server is healthy (e.g. server config can be
-          // retrieved) before fulfilling.
-          this.isHealthy().then((isHealthy) => {
-            if (isHealthy) {
-              fulfill();
-            } else {
-              // Server has been installed (Api Url and Certificate have been)
-              // set, but is not healthy.  This could occur if the server
-              // is behind a firewall.
-              console.error(
-                  'digitalocean_server: Server is unreachable, possibly due to firewall.');
-              reject(new errors.UnreachableServerError());
-            }
-          });
+          fulfill();
         } else if (this.installState === InstallState.ERROR) {
           reject(new errors.ServerInstallFailedError());
         } else if (this.installState === InstallState.DELETED) {
@@ -142,7 +97,7 @@ class DigitaloceanServer extends ShadowboxServer implements server.ManagedServer
 
   // Sets this.installState, will keep polling until this.installState can
   // be set to something other than UNKNOWN.
-  private refreshInstallState(): void {
+  private pollInstallState(): void {
     const TIMEOUT_MS = 5 * 60 * 1000;
     const startTimestamp = Date.now();
 
@@ -155,15 +110,15 @@ class DigitaloceanServer extends ShadowboxServer implements server.ManagedServer
       }
       if (this.getTagValue(INSTALL_ERROR_TAG)) {
         console.error(`error tag: ${this.getTagValue(INSTALL_ERROR_TAG)}`);
-        this.installState = InstallState.ERROR;
+        this.setInstallState(InstallState.ERROR);
       } else if (Date.now() - startTimestamp >= TIMEOUT_MS) {
         console.error('hit timeout while waiting for installation');
-        this.installState = InstallState.ERROR;
+        this.setInstallState(InstallState.ERROR);
       } else if (this.setApiUrlAndCertificate()) {
         // API Url and Certificate have been set, so we have successfully
         // installed the server and can now make API calls.
         console.info('digitalocean_server: Successfully found API and cert tags');
-        this.installState = InstallState.SUCCESS;
+        this.setInstallState(InstallState.SUCCESS);
       }
     };
 
@@ -176,36 +131,54 @@ class DigitaloceanServer extends ShadowboxServer implements server.ManagedServer
 
     // Periodically refresh the droplet info then try to update the install
     // state again.
-    const intervalId = setInterval(() => {
+    const intervalId = setInterval(async () => {
       // Check if install state is already known, so we don't make an unnecessary
       // request to fetch droplet info.
       if (this.installState !== InstallState.UNKNOWN) {
         clearInterval(intervalId);
         return;
       }
-      this.refreshDropletInfo().then(() => {
-        updateInstallState();
-        // Immediately clear the interval if the installState is known to prevent
-        // race conditions due to setInterval firing async.
-        if (this.installState !== InstallState.UNKNOWN) {
-          clearInterval(intervalId);
-          return;
-        }
-      });
+      try {
+        await this.refreshDropletInfo();
+      } catch (error) {
+        console.log('Failed to get droplet info', error);
+        this.setInstallState(InstallState.ERROR);
+        clearInterval(intervalId);
+        return;
+      }
+      updateInstallState();
+      // Immediately clear the interval if the installState is known to prevent
+      // race conditions due to setInterval firing async.
+      if (this.installState !== InstallState.UNKNOWN) {
+        clearInterval(intervalId);
+        return;
+      }
       // Note, if there is an error refreshing the droplet, we should just
       // try again, as there may be an intermittent network issue.
     }, 3000);
   }
 
+  private setInstallState(installState: InstallState) {
+    if (this.installState !== InstallState.UNKNOWN) {
+      // Cannot change the install state once set.
+      return;
+    }
+    if (installState === InstallState.UNKNOWN) {
+      return;
+    }
+    this.installState = installState;
+    this.setInstallCompleted();
+  }
+
   // Returns true on success, else false.
   private setApiUrlAndCertificate(): boolean {
     try {
-      // Atempt to get certificate fingerprint and management api address,
+      // Attempt to get certificate fingerprint and management api address,
       // these methods throw exceptions if the fields are unavailable.
       const certificateFingerprint = this.getCertificateFingerprint();
       const apiAddress = this.getManagementApiAddress();
       // Loaded both the cert and url without exceptions, they can be set.
-      whitelistCertificate(certificateFingerprint);
+      trustCertificate(certificateFingerprint);
       this.setManagementApiUrl(apiAddress);
       return true;
     } catch (e) {
@@ -215,17 +188,15 @@ class DigitaloceanServer extends ShadowboxServer implements server.ManagedServer
   }
 
   // Refreshes the state from DigitalOcean API.
-  private refreshDropletInfo(): Promise<void> {
-    return this.digitalOcean.getDroplet(this.dropletInfo.id).then((newDropletInfo: DropletInfo) => {
-      const oldDropletInfo = this.dropletInfo;
-      this.dropletInfo = newDropletInfo;
-
-      if (newDropletInfo.status !== oldDropletInfo.status) {
-        if (newDropletInfo.status === 'active') {
-          this.eventQueue.emit('server-active');
-        }
+  private async refreshDropletInfo(): Promise<void> {
+    const newDropletInfo = await this.digitalOcean.getDroplet(this.dropletInfo.id);
+    const oldDropletInfo = this.dropletInfo;
+    this.dropletInfo = newDropletInfo;
+    if (newDropletInfo.status !== oldDropletInfo.status) {
+      if (newDropletInfo.status === 'active') {
+        this.eventQueue.emit('server-active');
       }
-    });
+    }
   }
 
   // Gets the value for the given key, stored in the DigitalOcean tags.
@@ -299,7 +270,7 @@ class DigitaloceanServer extends ShadowboxServer implements server.ManagedServer
 
   // Callback to be invoked once server is deleted.
   private onDelete() {
-    this.installState = InstallState.DELETED;
+    this.setInstallState(InstallState.DELETED);
   }
 
   private getInstallCompletedStorageKey() {
@@ -330,8 +301,8 @@ class DigitalOceanHost implements server.ManagedServerHost {
     return {usd: this.dropletInfo.size.price_monthly};
   }
 
-  getRegionId(): server.RegionId {
-    return this.dropletInfo.region.slug;
+  getCloudLocation(): Region {
+    return new Region(this.dropletInfo.region.slug);
   }
 
   delete(): Promise<void> {
@@ -343,100 +314,4 @@ class DigitalOceanHost implements server.ManagedServerHost {
 
 function startsWithCaseInsensitive(text: string, prefix: string) {
   return text.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
-}
-
-function getCityId(slug: server.RegionId): string {
-  return slug.substr(0, 3).toLowerCase();
-}
-
-const MACHINE_SIZE = 's-1vcpu-1gb';
-
-export class DigitaloceanServerRepository implements server.ManagedServerRepository {
-  constructor(
-      private digitalOcean: DigitalOceanSession, private image: string, private metricsUrl: string,
-      private sentryApiUrl: string, private debugMode: boolean) {}
-
-  // Return a map of regions that are available and support our target machine size.
-  getRegionMap(): Promise<Readonly<server.RegionMap>> {
-    return this.digitalOcean.getRegionInfo().then((regions) => {
-      const ret: server.RegionMap = {};
-      regions.forEach((region) => {
-        const cityId = getCityId(region.slug);
-        if (!(cityId in ret)) {
-          ret[cityId] = [];
-        }
-        if (region.available && region.sizes.indexOf(MACHINE_SIZE) !== -1) {
-          ret[cityId].push(region.slug);
-        }
-      });
-      return ret;
-    });
-  }
-
-  // Creates a server and returning it when it becomes active.
-  createServer(region: server.RegionId): Promise<server.ManagedServer> {
-    const name = MakeEnglishNameForServer(region);
-    console.time('activeServer');
-    console.time('servingServer');
-    const onceKeyPair = crypto.generateKeyPair();
-    const watchtowerRefreshSeconds = this.image ? 30 : undefined;
-    const installCommand = getInstallScript(
-        this.digitalOcean.accessToken, name, this.image, watchtowerRefreshSeconds, this.metricsUrl,
-        this.sentryApiUrl);
-
-    const dropletSpec = {
-      installCommand,
-      size: MACHINE_SIZE,
-      image: 'docker-18-04',
-      tags: [SHADOWBOX_TAG],
-    };
-    return onceKeyPair
-        .then((keyPair) => {
-          if (this.debugMode) {
-            // Strip carriage returns, which produce weird blank lines when pasted into a terminal.
-            console.debug(
-                `private key for SSH access to new droplet:\n${
-                    keyPair.private.replace(/\r/g, '')}\n\n` +
-                'Use "ssh -i keyfile root@[ip_address]" to connect to the machine');
-          }
-          return this.digitalOcean.createDroplet(name, region, keyPair.public, dropletSpec);
-        })
-        .then((response) => {
-          return new DigitaloceanServer(this.digitalOcean, response.droplet);
-        });
-  }
-
-  listServers(): Promise<server.ManagedServer[]> {
-    return this.digitalOcean.getDropletsByTag(SHADOWBOX_TAG).then((droplets) => {
-      return droplets.map((droplet) => {
-        return new DigitaloceanServer(this.digitalOcean, droplet);
-      });
-    });
-  }
-}
-
-function sanitizeDigitaloceanToken(input: string): string {
-  const sanitizedInput = input.trim();
-  const pattern = /^[A-Za-z0-9_\/-]+$/;
-  if (!pattern.test(sanitizedInput)) {
-    throw new Error('Invalid DigitalOcean Token');
-  }
-  return sanitizedInput;
-}
-
-// cloudFunctions needs to define cloud::public_ip and cloud::add_tag.
-function getInstallScript(
-    accessToken: string, name: string, image?: string, watchtowerRefreshSeconds?: number,
-    metricsUrl?: string, sentryApiUrl?: string): string {
-  const sanitizezedAccessToken = sanitizeDigitaloceanToken(accessToken);
-  // TODO: consider shell escaping these variables.
-  return '#!/bin/bash -eu\n' +
-      `export DO_ACCESS_TOKEN=${sanitizezedAccessToken}\n` +
-      (image ? `export SB_IMAGE=${image}\n` : '') +
-      (watchtowerRefreshSeconds ?
-           `export WATCHTOWER_REFRESH_SECONDS=${watchtowerRefreshSeconds}\n` :
-           '') +
-      (sentryApiUrl ? `export SENTRY_API_URL="${sentryApiUrl}"\n` : '') +
-      (metricsUrl ? `export SB_METRICS_URL=${metricsUrl}\n` : '') +
-      `export SB_DEFAULT_SERVER_NAME="${name}"\n` + do_install_script.SCRIPT;
 }

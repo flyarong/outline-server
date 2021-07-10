@@ -16,5 +16,23 @@
 
 do_action shadowbox/docker/build
 
+LOGFILE="$(mktemp)"
+readonly LOGFILE
+echo "Running Shadowbox integration test.  Logs at ${LOGFILE}"
+
 cd src/shadowbox/integration_test
-./test.sh
+
+declare -i result=0
+
+if ./test.sh > "${LOGFILE}" 2>&1 ; then
+  echo "Test Passed!"
+  # Removing the log file sometimes fails on Travis.  There's no point in us cleaning it up
+  # on a CI build anyways.
+  rm -f "${LOGFILE}"
+else
+  result=$?
+  echo "Test Failed!  Logs:"
+  cat "${LOGFILE}"
+fi
+
+exit "${result}"

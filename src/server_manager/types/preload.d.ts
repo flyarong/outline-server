@@ -14,7 +14,7 @@
 
 // Functions made available to the renderer process via preload.ts.
 
-declare function whitelistCertificate(fingerprint: string): boolean;
+declare function trustCertificate(fingerprint: string): boolean;
 declare function openImage(basename: string): void;
 declare function onUpdateDownloaded(callback: () => void): void;
 
@@ -29,5 +29,7 @@ interface OauthSession {
 }
 
 declare function runDigitalOceanOauth(): OauthSession;
+
+declare function runGcpOauth(): OauthSession;
 
 declare function bringToFront(): void;

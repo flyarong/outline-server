@@ -14,12 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-readonly MODULE_DIR=$(dirname $0)
-readonly OUT_DIR=$BUILD_DIR/metrics_server/prod
-readonly CONFIG_FILE=$MODULE_DIR/config_prod.json
+readonly SRC_DIR="src/metrics_server"
+readonly BUILD_DIR="build/metrics_server"
 
-# Build the server
-$MODULE_DIR/build.sh $OUT_DIR $CONFIG_FILE
+rm -rf "${BUILD_DIR}"
 
-# Deploy as "reportHourlyConnectionMetrics"
-gcloud --project=uproxysite beta functions deploy reportHourlyConnectionMetrics --stage-bucket uproxy-cloud-functions --trigger-http --source=$OUT_DIR --entry-point=reportHourlyConnectionMetrics
+yarn 'do' metrics_server/build
+
+cp "${SRC_DIR}/app_prod.yaml" "${BUILD_DIR}/app.yaml"
+cp "${SRC_DIR}/config_prod.json" "${BUILD_DIR}/config.json"
+cp "${SRC_DIR}/package.json" "${BUILD_DIR}/"
+
+gcloud app deploy "${SRC_DIR}/dispatch.yaml" "${BUILD_DIR}" --project uproxysite --verbosity info --no-promote --no-stop-previous-version

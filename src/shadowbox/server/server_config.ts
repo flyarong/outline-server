@@ -15,6 +15,7 @@
 import * as uuidv4 from 'uuid/v4';
 
 import * as json_config from '../infrastructure/json_config';
+import {DataLimit} from '../model/access_key';
 
 // Serialized format for the server config.
 // WARNING: Renaming fields will break backwards-compatibility.
@@ -27,8 +28,15 @@ export interface ServerConfigJson {
   name?: string;
   // When this server was created. Shown in the Outline Manager and to trigger the metrics opt-in.
   createdTimestampMs?: number;
+  // What port number should we use for new access keys?
+  portForNewAccessKeys?: number;
   // Which staged rollouts we should force enabled or disabled.
   rollouts?: RolloutConfigJson[];
+  // We don't serialize the shadowbox version, this is obtained dynamically from node.
+  // Public proxy hostname.
+  hostname?: string;
+  // Default data transfer limit applied to all access keys.
+  accessKeyDataLimit?: DataLimit;
 }
 
 // Serialized format for rollouts.
@@ -45,8 +53,9 @@ export function readServerConfig(filename: string): json_config.JsonConfig<Serve
   try {
     const config = json_config.loadFileConfig<ServerConfigJson>(filename);
     config.data().serverId = config.data().serverId || uuidv4();
-    config.data().createdTimestampMs = config.data().createdTimestampMs || Date.now();
     config.data().metricsEnabled = config.data().metricsEnabled || false;
+    config.data().createdTimestampMs = config.data().createdTimestampMs || Date.now();
+    config.data().hostname = config.data().hostname || process.env.SB_PUBLIC_IP;
     config.write();
     return config;
   } catch (error) {

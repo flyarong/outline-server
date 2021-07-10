@@ -14,8 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-export SB_PUBLIC_IP=${SB_PUBLIC_IP:-$(curl https://ipinfo.io/ip)}
-export SB_METRICS_URL=${SB_METRICS_URL:-https://metrics-prod.uproxy.org}
+export SB_PUBLIC_IP="${SB_PUBLIC_IP:-$(curl https://ipinfo.io/ip)}"
+export SB_METRICS_URL="${SB_METRICS_URL:-https://prod.metrics.getoutline.org}"
+
+# Make sure we don't leak readable files to other users.
+umask 0007
 
 # The maximum number of files that can be opened by ss-server greatly
 # influence on performance, as described here:
@@ -31,11 +34,12 @@ export SB_METRICS_URL=${SB_METRICS_URL:-https://metrics-prod.uproxy.org}
 # Interestingly, we observed poor performance with large values such as 524288
 # and 1048576, the default values in recent releases of Ubuntu. Our
 # non-exhaustive testing indicates a performance cliff for Outline after values
-# around 270k; to stay well bekow of this cliff we've semi-handwaved-ly settled
+# around 270k; to stay well below of this cliff we've semi-handwaved-ly settled
 # upon a limit of 32k files.
+# shellcheck disable=SC2039 # ulimit -n is in bash and busybox but not POSIX
 ulimit -n 32768
 
-# Start cron, which is used to check for updates to the GeoIP database
+# Start cron, which is used to check for updates to the IP-to-country database
 crond
 
-node app/server/main.js
+node app/main.js

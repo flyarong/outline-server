@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as events from 'events';
-
 import * as errors from '../infrastructure/errors';
 
 export interface DigitalOceanDropletSpecification {
@@ -91,18 +89,14 @@ export interface DigitalOceanSession {
   getDroplets(): Promise<DropletInfo[]>;
 }
 
-export function createDigitalOceanSession(accessToken: string): DigitalOceanSession {
-  return new RestApiSession(accessToken);
-}
-
-class RestApiSession implements DigitalOceanSession {
+export class RestApiSession implements DigitalOceanSession {
   // Constructor takes a DigitalOcean access token, which should have
   // read+write permissions.
   constructor(public accessToken: string) {}
 
   public getAccount(): Promise<Account> {
     console.info('Requesting account');
-    return this.request<{account: Account}>('GET', 'account/').then((response) => {
+    return this.request<{account: Account}>('GET', 'account').then((response) => {
       return response.account;
     });
   }
@@ -194,7 +188,7 @@ class RestApiSession implements DigitalOceanSession {
 
   public getDropletsByTag(tag: string): Promise<DropletInfo[]> {
     console.info('Requesting droplet by tag');
-    return this.request<{droplets: DropletInfo[]}>('GET', `droplets/?tag_name=${encodeURI(tag)}`)
+    return this.request<{droplets: DropletInfo[]}>('GET', `droplets?tag_name=${encodeURI(tag)}`)
         .then((response) => {
           return response.droplets;
         });
@@ -202,7 +196,7 @@ class RestApiSession implements DigitalOceanSession {
 
   public getDroplets(): Promise<DropletInfo[]> {
     console.info('Requesting droplets');
-    return this.request<{droplets: DropletInfo[]}>('GET', 'droplets/').then((response) => {
+    return this.request<{droplets: DropletInfo[]}>('GET', 'droplets').then((response) => {
       return response.droplets;
     });
   }
@@ -222,6 +216,9 @@ class RestApiSession implements DigitalOceanSession {
           // this.response may be empty.
           const responseObj = (xhr.response ? JSON.parse(xhr.response) : {});
           resolve(responseObj);
+        } else if (xhr.status === 401) {
+          console.error('DigitalOcean request failed with Unauthorized error');
+          reject(new XhrError());
         } else {
           // this.response is a JSON object, whose message is an error string.
           const responseJson = JSON.parse(xhr.response);

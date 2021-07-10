@@ -14,21 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if (( $# <= 0 )); then
-  echo "No test data specified"
-  exit 1;
-fi
+readonly TEST_DIR="${BUILD_DIR}/js/metrics_server/"
+rm -rf "${TEST_DIR}"
 
-readonly MODULE_DIR=$(dirname $0)
-readonly OUT_DIR=$BUILD_DIR/metrics_server/test
-readonly CONFIG_FILE=$MODULE_DIR/config_test.json
+tsc -p "${ROOT_DIR}/src/metrics_server" --outDir "${TEST_DIR}"
+jasmine --config="${ROOT_DIR}/jasmine.json"
 
-# Build the server
-$MODULE_DIR/build.sh $OUT_DIR $CONFIG_FILE
-
-# TODO(dborkan): figure out why the functions binary isn't installed at $ROOT_DIR/node_modules/.bin/
-readonly FUNCTIONS_EMULATOR=$ROOT_DIR/node_modules/@google-cloud/functions-emulator/bin/functions
-
-$FUNCTIONS_EMULATOR start
-$FUNCTIONS_EMULATOR deploy reportHourlyConnectionMetrics --trigger-http --local-path=$OUT_DIR --entry-point=reportHourlyConnectionMetrics
-$FUNCTIONS_EMULATOR call reportHourlyConnectionMetrics --data=$1
+rm -rf "${TEST_DIR}"

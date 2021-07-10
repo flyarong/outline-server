@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as bodyParser from 'body-parser';
 import * as crypto from 'crypto';
 import * as electron from 'electron';
 import * as express from 'express';
 import * as http from 'http';
-import * as path from 'path';
+import {AddressInfo} from 'net';
 import * as request from 'request';
 
 const REGISTERED_REDIRECTS: Array<{clientId: string, port: number}> = [
@@ -124,32 +123,19 @@ export function runOauth(): OauthSession {
     }
   });
 
-  // This is the callback for the DigitalOcean callback. It serves Javascript that will
+  // This is the callback for the DigitalOcean callback. It serves JavaScript that will
   // extract the access token from the hash and post it back to our http server.
   app.get('/', (request, response) => {
     response.send(`<html>
           <head><title>Authenticating...</title></head>
           <body>
-              <noscript>You need to enable Javascript in order for the DigitalOcean authentication to work.</noscript>
+              <noscript>You need to enable JavaScript in order for the DigitalOcean authentication to work.</noscript>
               <form id="form" method="POST">
                   <input id="params" type="hidden" name="params"></input>
               </form>
               <script>
-                  // We can't use URLSearchParams in IE :-(
-                  function splitParams(paramsStr) {
-                    var params = {};
-                    var kvs = paramsStr.split("&");
-                    for (var i in kvs) {
-                      pair = kvs[i].split("=");
-                      params[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1]);
-                    }
-                    return params;
-                  }
                   var paramsStr = location.hash.substr(1);
-                  var params = splitParams(paramsStr);
                   var form = document.getElementById("form");
-                  var targetUrl = params["state"];
-                  form.setAttribute("action", targetUrl);
                   document.getElementById("params").setAttribute("value", paramsStr);
                   form.submit();
               </script>
@@ -162,19 +148,19 @@ export function runOauth(): OauthSession {
     rejectWrapper.reject = reject;
     // This is the POST endpoint that receives the access token and redirects to either DigitalOcean
     // for the user to complete their account creation, or to a page that closes the window.
-    app.post('/', bodyParser.urlencoded({type: '*/*', extended: false}), (request, response) => {
+    app.post('/', express.urlencoded({type: '*/*', extended: false}), (request, response) => {
       server.close();
 
-      const requestSecret = request.query.secret;
-      if (requestSecret !== secret) {
-        response.status(400).send(closeWindowHtml('Authentication failed'));
-        reject(new Error(`Expected secret ${secret}. Got ${requestSecret}`));
-        return;
-      }
       const params = new URLSearchParams(request.body.params);
       if (params.get('error')) {
         response.status(400).send(closeWindowHtml('Authentication failed'));
         reject(new Error(`DigitalOcean OAuth error: ${params.get('error_description')}`));
+        return;
+      }
+      const requestSecret = params.get('state');
+      if (requestSecret !== secret) {
+        response.status(400).send(closeWindowHtml('Authentication failed'));
+        reject(new Error(`Expected secret ${secret}. Got ${requestSecret}`));
         return;
       }
       const accessToken = params.get('access_token');
@@ -201,15 +187,13 @@ export function runOauth(): OauthSession {
     listenOnFirstPort(server, REGISTERED_REDIRECTS.map(e => e.port))
         .then((index) => {
           const {port, clientId} = REGISTERED_REDIRECTS[index];
-          const address = server.address();
+          const address = server.address() as AddressInfo;
           console.log(`OAuth target listening on ${address.address}:${address.port}`);
 
-          const targetUrl = `http://localhost:${
-              encodeURIComponent(address.port.toString())}?secret=${encodeURIComponent(secret)}`;
           const oauthUrl = `https://cloud.digitalocean.com/v1/oauth/authorize?client_id=${
               encodeURIComponent(
                   clientId)}&response_type=token&scope=read%20write&redirect_uri=http://localhost:${
-              encodeURIComponent(port.toString())}/&state=${encodeURIComponent(targetUrl)}`;
+              encodeURIComponent(port.toString())}/&state=${encodeURIComponent(secret)}`;
           console.log(`Opening OAuth URL ${oauthUrl}`);
           electron.shell.openExternal(oauthUrl);
         })

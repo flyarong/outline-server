@@ -12,39 +12,69 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import * as semver from 'semver';
+
 import * as errors from '../infrastructure/errors';
 import * as server from '../model/server';
 
-// Interfaces used by metrics REST APIs.
-interface MetricsEnabled {
-  metricsEnabled: boolean;
-}
-export interface ServerName {
+interface AccessKeyJson {
+  id: string;
   name: string;
+  accessUrl: string;
 }
-export interface ServerConfig {
+
+interface ServerConfigJson {
   name: string;
   metricsEnabled: boolean;
   serverId: string;
   createdTimestampMs: number;
+  portForNewAccessKeys: number;
+  hostnameForAccessKeys: string;
+  version: string;
+  // This is the server default data limit.  We use this instead of defaultDataLimit for API
+  // backwards compatibility.
+  accessKeyDataLimit?: server.DataLimit;
+}
+
+// Byte transfer stats for the past 30 days, including both inbound and outbound.
+// TODO: this is copied at src/shadowbox/model/metrics.ts.  Both copies should
+// be kept in sync, until we can find a way to share code between the web_app
+// and shadowbox.
+interface DataUsageByAccessKeyJson {
+  // The accessKeyId should be of type AccessKeyId, however that results in the tsc
+  // error TS1023: An index signature parameter type must be 'string' or 'number'.
+  // See https://github.com/Microsoft/TypeScript/issues/2491
+  // TODO: this still says "UserId", changing to "AccessKeyId" will require
+  // a change on the shadowbox server.
+  bytesTransferredByUserId: {[accessKeyId: string]: number};
+}
+
+// Converts the access key JSON from the API to its model.
+function makeAccessKeyModel(apiAccessKey: AccessKeyJson): server.AccessKey {
+  return apiAccessKey as server.AccessKey;
 }
 
 export class ShadowboxServer implements server.Server {
   private managementApiAddress: string;
-  private serverConfig: ServerConfig;
+  private serverConfig: ServerConfigJson;
 
-  constructor() {}
+  constructor(private readonly id: string) {}
+
+  getId(): string {
+    return this.id;
+  }
 
   listAccessKeys(): Promise<server.AccessKey[]> {
     console.info('Listing access keys');
-    return this.apiRequest<{accessKeys: server.AccessKey[]}>('access-keys').then((response) => {
-      return response.accessKeys;
+    return this.apiRequest<{accessKeys: AccessKeyJson[]}>('access-keys').then((response) => {
+      return response.accessKeys.map(makeAccessKeyModel);
     });
   }
 
-  addAccessKey(): Promise<server.AccessKey> {
+  async addAccessKey(): Promise<server.AccessKey> {
     console.info('Adding access key');
-    return this.apiRequest<server.AccessKey>('access-keys', {method: 'POST'});
+    return makeAccessKeyModel(
+        await this.apiRequest<AccessKeyJson>('access-keys', {method: 'POST'}));
   }
 
   renameAccessKey(accessKeyId: server.AccessKeyId, name: string): Promise<void> {
@@ -59,12 +89,62 @@ export class ShadowboxServer implements server.Server {
     return this.apiRequest<void>('access-keys/' + accessKeyId, {method: 'DELETE'});
   }
 
-  getDataUsage(): Promise<server.DataUsageByAccessKey> {
-    return this.apiRequest<server.DataUsageByAccessKey>('metrics/transfer');
+  async setDefaultDataLimit(limit: server.DataLimit): Promise<void> {
+    console.info(`Setting server default data limit: ${JSON.stringify(limit)}`);
+    const requestOptions = {
+      method: 'PUT',
+      headers: new Headers({'Content-Type': 'application/json'}),
+      body: JSON.stringify({limit})
+    };
+    await this.apiRequest<void>(this.getDefaultDataLimitPath(), requestOptions);
+    this.serverConfig.accessKeyDataLimit = limit;
+  }
+
+  async removeDefaultDataLimit(): Promise<void> {
+    console.info(`Removing server default data limit`);
+    await this.apiRequest<void>(this.getDefaultDataLimitPath(), {method: 'DELETE'});
+    delete this.serverConfig.accessKeyDataLimit;
+  }
+
+  getDefaultDataLimit(): server.DataLimit|undefined {
+    return this.serverConfig.accessKeyDataLimit;
+  }
+
+  private getDefaultDataLimitPath(): string {
+    const version = this.getVersion();
+    if (semver.gte(version, '1.4.0')) {
+      // Data limits became a permanent feature in shadowbox v1.4.0.
+      return 'server/access-key-data-limit';
+    }
+    return 'experimental/access-key-data-limit';
+  }
+
+  async setAccessKeyDataLimit(keyId: server.AccessKeyId, limit: server.DataLimit): Promise<void> {
+    console.info(`Setting data limit of ${limit.bytes} bytes for access key ${keyId}`);
+    const requestOptions = {
+      method: 'PUT',
+      headers: new Headers({'Content-Type': 'application/json'}),
+      body: JSON.stringify({limit})
+    };
+    await this.apiRequest<void>(`access-keys/${keyId}/data-limit`, requestOptions);
+  }
+
+  async removeAccessKeyDataLimit(keyId: server.AccessKeyId): Promise<void> {
+    console.info(`Removing data limit from access key ${keyId}`);
+    await this.apiRequest<void>(`access-keys/${keyId}/data-limit`, {method: 'DELETE'});
+  }
+
+  async getDataUsage(): Promise<server.BytesByAccessKey> {
+    const jsonResponse = await this.apiRequest<DataUsageByAccessKeyJson>('metrics/transfer');
+    const usageMap = new Map<server.AccessKeyId, number>();
+    for (const [accessKeyId, bytes] of Object.entries(jsonResponse.bytesTransferredByUserId)) {
+      usageMap.set(accessKeyId, bytes ?? 0);
+    }
+    return usageMap;
   }
 
   getName(): string {
-    return this.serverConfig.name;
+    return this.serverConfig?.name;
   }
 
   setName(name: string): Promise<void> {
@@ -77,6 +157,10 @@ export class ShadowboxServer implements server.Server {
     return this.apiRequest<void>('name', requestOptions).then(() => {
       this.serverConfig.name = name;
     });
+  }
+
+  getVersion(): string {
+    return this.serverConfig.version;
   }
 
   getMetricsEnabled(): boolean {
@@ -96,7 +180,7 @@ export class ShadowboxServer implements server.Server {
     });
   }
 
-  getServerId(): string {
+  getMetricsId(): string {
     return this.serverConfig.serverId;
   }
 
@@ -123,29 +207,62 @@ export class ShadowboxServer implements server.Server {
     return new Date(this.serverConfig.createdTimestampMs);
   }
 
-  getHostname(): string {
+  async setHostnameForAccessKeys(hostname: string): Promise<void> {
+    console.info(`setHostname ${hostname}`);
+    this.serverConfig.hostnameForAccessKeys = hostname;
+    const requestOptions: RequestInit = {
+      method: 'PUT',
+      headers: new Headers({'Content-Type': 'application/json'}),
+      body: JSON.stringify({hostname})
+    };
+    return this.apiRequest<void>('server/hostname-for-access-keys', requestOptions).then(() => {
+      this.serverConfig.hostnameForAccessKeys = hostname;
+    });
+  }
+
+  getHostnameForAccessKeys(): string {
     try {
-      return new URL(this.managementApiAddress).hostname;
+      return this.serverConfig?.hostnameForAccessKeys ??
+          new URL(this.managementApiAddress).hostname;
     } catch (e) {
       return '';
     }
   }
 
-  getManagementPort(): number {
+  getPortForNewAccessKeys(): number|undefined {
     try {
-      return parseInt(new URL(this.managementApiAddress).port, 10);
+      if (typeof this.serverConfig.portForNewAccessKeys !== 'number') {
+        return undefined;
+      }
+      return this.serverConfig.portForNewAccessKeys;
     } catch (e) {
       return undefined;
     }
   }
 
-  private getServerConfig(): Promise<ServerConfig> {
+  setPortForNewAccessKeys(newPort: number): Promise<void> {
+    console.info(`setPortForNewAccessKeys: ${newPort}`);
+    const requestOptions: RequestInit = {
+      method: 'PUT',
+      headers: new Headers({'Content-Type': 'application/json'}),
+      body: JSON.stringify({"port": newPort})
+    };
+    return this.apiRequest<void>('server/port-for-new-access-keys', requestOptions).then(() => {
+      this.serverConfig.portForNewAccessKeys = newPort;
+    });
+  }
+
+  private async getServerConfig(): Promise<ServerConfigJson> {
     console.info('Retrieving server configuration');
-    return this.apiRequest<ServerConfig>('server');
+    return await this.apiRequest<ServerConfigJson>('server');
   }
 
   protected setManagementApiUrl(apiAddress: string): void {
     this.managementApiAddress = apiAddress;
+  }
+
+  getManagementApiUrl() {
+    return this.managementApiAddress;
   }
 
   // Makes a request to the management API.

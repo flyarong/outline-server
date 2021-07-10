@@ -13,39 +13,68 @@
 // limitations under the License.
 
 import * as sentry from '@sentry/electron';
-import {ipcRenderer} from 'electron';
+import {contextBridge, ipcRenderer} from 'electron';
 import {URL} from 'url';
 
 import * as digitalocean_oauth from './digitalocean_oauth';
+import * as gcp_oauth from './gcp_oauth';
+import {redactManagerUrl} from './util';
 
 // This file is run in the renderer process *before* nodeIntegration is disabled.
 //
 // Use it for main/renderer process communication and configuring Sentry (which works via
 // main/renderer process messages).
 
-// DSN is all we need to specify; for all other config - breadcrumbs, etc., see the main process.
+// Configure Sentry to redact PII from the renderer process requests.
+// For all other config see the main process.
 const params = new URL(document.URL).searchParams;
-sentry.init({dsn: params.get('sentryDsn')});
+const sentryDsn = params.get('sentryDsn');
+if (sentryDsn) {
+  sentry.init({
+    dsn: sentryDsn,
+    beforeBreadcrumb: (breadcrumb: sentry.Breadcrumb) => {
+      // Redact PII from fetch requests.
+      if (breadcrumb.category === 'fetch' && breadcrumb.data && breadcrumb.data.url) {
+        try {
+          breadcrumb.data.url = `(redacted)/${redactManagerUrl(breadcrumb.data.url)}`;
+        } catch (e) {
+          // NOTE: cannot log this failure to console if console breadcrumbs are enabled
+          breadcrumb.data.url = `(error redacting)`;
+        }
+      }
+      return breadcrumb;
+    }
+  });
+}
 
-// tslint:disable-next-line:no-any
-(window as any).whitelistCertificate = (fingerprint: string) => {
-  return ipcRenderer.sendSync('whitelist-certificate', fingerprint);
-};
+contextBridge.exposeInMainWorld(
+    'trustCertificate',
+    (fingerprint: string) => {
+      return ipcRenderer.sendSync('trust-certificate', fingerprint);
+    });
 
-// tslint:disable-next-line:no-any
-(window as any).openImage = (basename: string) => {
-  ipcRenderer.send('open-image', basename);
-};
+contextBridge.exposeInMainWorld(
+    'openImage',
+    (basename: string) => {
+      ipcRenderer.send('open-image', basename);
+    });
 
-// tslint:disable-next-line:no-any
-(window as any).onUpdateDownloaded = (callback: () => void) => {
-  ipcRenderer.on('update-downloaded', callback);
-};
+contextBridge.exposeInMainWorld(
+    'onUpdateDownloaded',
+    (callback: () => void) => {
+      ipcRenderer.on('update-downloaded', callback);
+    });
 
-// tslint:disable-next-line:no-any
-(window as any).runDigitalOceanOauth = digitalocean_oauth.runOauth;
+contextBridge.exposeInMainWorld(
+    'runDigitalOceanOauth',
+    digitalocean_oauth.runOauth);
 
-// tslint:disable-next-line:no-any
-(window as any).bringToFront = () => {
-  return ipcRenderer.send('bring-to-front');
-};
+contextBridge.exposeInMainWorld(
+    'runGcpOauth',
+    gcp_oauth.runOauth);
+
+contextBridge.exposeInMainWorld(
+    'bringToFront',
+    () => {
+      return ipcRenderer.send('bring-to-front');
+    });
