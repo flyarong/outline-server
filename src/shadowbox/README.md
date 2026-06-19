@@ -1,196 +1,148 @@
-# Outline Server
+# Outline Server (Shadowbox)
 
-The internal name for the Outline server is "Shadowbox". It is a server set up
-that runs a user management API and starts Shadowsocks instances on demand.
+The Outline Server, internal name "Shadowbox," is designed to streamline the setup and sharing of Shadowsocks servers. It includes a user management API and creates Shadowsocks instances when needed. It's managed by the [Outline Manager](https://github.com/OutlineFoundation/outline-apps/) and used as proxy by the [Outline Client](https://github.com/OutlineFoundation/outline-apps/) apps. Shadowbox is also compatible with standard Shadowsocks clients.
 
-It aims to make it as easy as possible to set up and share a Shadowsocks
-server. It's managed by the Outline Manager and used as proxy by the Outline
-client apps. Shadowbox is also compatible with standard Shadowsocks clients.
+## Installation
 
-## Self-hosted installation
+### Self-Hosted Installation
 
-To install and run Shadowbox on your own server, run
-```
-bash -c "$(wget -qO- https://raw.githubusercontent.com/Jigsaw-Code/outline-server/master/src/server_manager/install_scripts/install_server.sh)"
-```
+1. **Run the Installation Script**
 
-Use `bash -x` instead at the end of the command if you need to debug the installation.
+   ```sh
+   sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/OutlineFoundation/outline-apps/master/server_manager/install_scripts/install_server.sh)"
+   ```
 
-## Running from source code
+1. **Customize (Optional)**
 
-### Prerequisites
+   Add flags for hostname, port, etc. Example:
 
-Besides [Node](https://nodejs.org/en/download/) and [Yarn](https://yarnpkg.com/en/docs/install), you will also need:
+   ```sh
+   sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/OutlineFoundation/outline-apps/master/server_manager/install_scripts/install_server.sh)" install_server.sh \
+     --hostname=myserver.com \
+     --keys-port=443
+   ```
 
-1. [Docker 1.13+](https://docs.docker.com/engine/installation/)
-1. [docker-compose 1.11+](https://docs.docker.com/compose/install/)
+   - Use `sudo --preserve-env` for environment variables.
+   - Use `bash -x` for debugging.
 
-Run `docker info` and make sure `Storage Driver` is `devicemapper`. If it is
-not, you can override it by editting `/etc/default/docker` or by passing
-another storage driver in the daemon commandline:
-```
-sudo dockerd --storage-driver=devicemapper
-```
+### Running from Source Code
 
-### Running Shadowbox as a Node.js app
+**Prerequisites**
 
-Build the server as a Node.js app:
-```
-yarn do shadowbox/server/build
-```
-The output will be at `build/shadowbox/app`.
+- [Docker](https://docs.docker.com/engine/install/)
+- [Node](https://nodejs.org/en/download/) LTS (`lts/hydrogen`, version `18.16.0`)
+- [NPM](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm) (version `9.5.1`)
 
+> [!TIP]
+> If you use `nvm`, switch to the correct Node version with `nvm use`.
 
-You can see how to run the server at [`shadowbox/server/run_action.sh`](server/run_action.sh).
+1. **Build and Run:**
 
+   Shadowbox supports running on linux and macOS hosts.
 
-### Running Shadowbox as a Docker container
+   - **Node.js App**
 
-> **NOTE**: This does not currently work in Docker on Mac due to use of
-`--host=net` and integrity checks failing. For now, please see the Manual
-testing section below.
+     ```sh
+     task shadowbox:start
+     ```
 
-### With docker command
+   - **Docker Container**
 
-Build the `outline/shadowbox` Docker image:
-```
-yarn do shadowbox/docker/build
-```
+     ```sh
+     task shadowbox:docker:start
+     ```
 
-Run server:
-```
-yarn do shadowbox/docker/run
-```
+     > [!TIP]
+     > Some useful commands when working with Docker images and containers:
+     >
+     > - **Debug Image:**
+     >
+     >   ```sh
+     >   docker run --rm -it --entrypoint=sh localhost/outline/shadowbox
+     >   ```
+     >
+     > - **Debug Running Container:**
+     >
+     >   ```sh
+     >   docker exec -it shadowbox sh
+     >   ```
+     >
+     > - **Cleanup Dangling Images:**
+     >
+     >   ```sh
+     >   docker rmi $(docker images -f dangling=true -q)
+     >   ```
 
-Debug image:
-```
-docker run --rm -it --entrypoint=sh outline/shadowbox
-```
+1. **Send a Test Request**
 
-Or a running container:
-```
-docker exec -it shadowbox sh
-```
-
-
-Delete dangling images:
-```
-docker rmi $(docker images -f dangling=true -q)
-```
-
+   ```sh
+   curl --insecure https://[::]:8081/TestApiPrefix/server
+   ```
 
 ## Access Keys Management API
 
-In order to utilize the Management API, you'll need to know the apiUrl for your Outline server. You can obtain this information from the 'access.txt' file under the 'shadowbox' directory of your server. An example apiUrl is: https://1.2.3.4:1234/3pQ4jf6qSr5WVeMO0XOo4z. 
+The Outline Server provides a REST API for access key management. If you know the `apiUrl` of your Outline Server (e.g. `https://1.2.3.4:1234/3pQ4jf6qSr5WVeMO0XOo4z`), you can directly manage the server's access keys using HTTP requests:
 
-Start by storing the apiURL you see see in that file, as a variable. For example:
-```
-API_URL=https://1.2.3.4:1234/3pQ4jf6qSr5WVeMO0XOo4z
-```
+1. **Find the Server's `apiUrl`:**
 
-You can then perform the following operations on the server, remotely.
+   - **Deployed with the Installation Script:** Run `grep "apiUrl" /opt/outline/access.txt | cut -d: -f 2-`
 
-List users
-```
-curl --insecure $API_URL/access-keys/
-```
+   - **Deployed with the Outline Manager:** Check the "Settings" tab.
 
-Create a user
-```
-curl --insecure -X POST $API_URL/access-keys
-```
+   - **Local Deployments from Source:** The `apiUrl` is simply `https://[::]:8081/TestApiPrefix`
 
-Rename a user
-(e.g. rename user ID 2 to 'albion')
-```
-curl --insecure -X PUT curl -F 'name=albion' $API_URL/access-keys/2/name
-```
+1. **API Examples:**
 
-Remove a user
-(e.g. remove user ID 2)
-```
-curl --insecure -X DELETE $API_URL/access-keys/2
-```
+   Replace `$API_URL` with your actual `apiUrl`.
 
-<details>
-<summary>
-Example output
-</summary>
+   - **List access keys:** `curl --insecure $API_URL/access-keys/`
 
-```
-$ API_URL=https://1.2.3.4:1234/3pQ4jf6qSr5WVeMO0XOo4z
-$ curl --insecure $API_URL/access-keys
-{"users":[]}
+   - **Create an access key:** `curl --insecure -X POST $API_URL/access-keys`
 
-$ curl --insecure -X POST $API_URL/access-keys
-{"id":"0","password":"Nm9wtQkPeshs","port":34180}
+   - **Get an access key (e.g. ID 1):** `curl --insecure $API_URL/access-keys/1`
 
-$ curl --insecure -X POST $API_URL/access-keys
-{"id":"1","password":"32mW3jhuhBGv","port":55625}
+   - **Rename an access key:** `curl --insecure -X PUT -F 'name=albion' $API_URL/access-keys/2/name`
 
-$ curl --insecure -X POST $API_URL/access-keys
-{"id":"2","password":"jFOKrJcpbgIb","port":15884}
+   - **Remove an access key:** `curl --insecure -X DELETE $API_URL/access-keys/1`
 
-$ curl --insecure $API_URL/access-keys
-{"users":[{"id":"0","password":"Nm9wtQkPeshs","port":34180},{"id":"1","password":"32mW3jhuhBGv","port":55625},{"id":"2","password":"jFOKrJcpbgIb","port":15884}]}
+   - **Set a data limit for all access keys:** (e.g. limit outbound data transfer access keys to 1MB over 30 days) `curl --insecure -X PUT -H "Content-Type: application/json" -d '{"limit": {"bytes": 1000}}' $API_URL/server/access-key-data-limit`
 
-$ curl --insecure -X DELETE $API_URL/access-keys/0 -v
-* Hostname was NOT found in DNS cache
-*   Trying ::1...
-* Connected to 1.2.3.4 (::1) port 1234 (#0)
-> DELETE /access-keys/0 HTTP/1.1
-> User-Agent: curl/7.35.0
-> Host: 1.2.3.4:1234
-> Accept: */*
->
-< HTTP/1.1 204 No Content
-< Date: Fri, 03 Feb 2017 22:46:39 GMT
-< Connection: keep-alive
-<
-* Connection #0 to host 1.2.3.4 left intact
+   - **Remove the access key data limit:** `curl --insecure -X DELETE $API_URL/server/access-key-data-limit`
 
-$ curl --insecure $API_URL/access-keys
-{"users":[{"id":"1","password":"32mW3jhuhBGv","port":55625},{"id":"2","password":"jFOKrJcpbgIb","port":15884}]}
-```
-</details>
+   - **And more...**
 
+1. **Further Options:**
+
+   Consult the [OpenAPI spec](./server/api.yml) and [documentation](https://redocly.github.io/redoc/?url=https://raw.githubusercontent.com/OutlineFoundation/outline-server/master/src/shadowbox/server/api.yml) for more options.
 
 ## Testing
 
 ### Manual
 
-After building a docker image with some local changes,
-upload it to your favorite registry
-(e.g. Docker Hub, quay.io, etc.).
+Build and run your image with:
 
-Then set your `SB_IMAGE` environment variable to point to the image you just
-uploaded (e.g. `export SB_IMAGE=yourdockerhubusername/shadowbox`) and
-run `yarn do server_manager/electron_app/run` and your droplet should be created with your
-modified image.
-
-### Automated
-
-To run the integration test:
-```
-yarn do shadowbox/integration_test/run
+```sh
+task shadowbox:docker:start
 ```
 
-This will set up three containers and two networks:
-```
-client <-> shadowbox <-> target
+### Integration Test
+
+The integration test will not only build and run your image, but also run a number of automated tests.
+
+```sh
+task shadowbox:integration_test
 ```
 
-`client` can only access `target` via shadowbox. We create a user on `shadowbox` then connect using the Shadowsocks client.
+This does the following:
 
-To test clients that rely on fetching a docker image from Dockerhub, you can push an image to your account and modify the
-client to use your image. To push your own image:
-```
-yarn shadowbox_docker_build && docker tag quay.io/outline/shadowbox $USER/shadowbox && docker push $USER/shadowbox
-```
+- Sets up three containers (`client`, `shadowbox`, `target`) and two networks.
+- Creates a user on `shadowbox`.
+- Connects to `target` through `shadowbox` using a Shadowsocks `client`: `client <-> shadowbox <-> target`
 
-If you need to test an unsigned image (e.g. your dev one):
-```
-DOCKER_CONTENT_TRUST=0 SHADOWBOX_IMAGE=$USER/shadowbox yarn do shadowbox/integration_test/run
-```
+1. **Testing Changes to the Server Config:**
 
-You can add tags if you need different versions in different clients.
+If your change includes new fields in the server config which are needed at server start-up time, then you mey need to remove the pre-existing test config:
+
+- **Delete Existing Config:** `rm /tmp/outline/persisted-state/shadowbox_server_config.json`
+
+- **Manually Edit:** You'll need to edit the JSON string within [`src/shadowbox/Taskfile.yml`](src/shadowbox/Taskfile.yml).

@@ -13,43 +13,74 @@
 // limitations under the License.
 
 export type AccessKeyId = string;
-export type AccessKeyMetricsId = string;
 
 // Parameters needed to access a Shadowsocks proxy.
 export interface ProxyParams {
   // Hostname of the proxy
-  hostname: string;
+  readonly hostname: string;
   // Number of the port where the Shadowsocks service is running.
-  portNumber: number;
+  readonly portNumber: number;
   // The Shadowsocks encryption method being used.
-  encryptionMethod: string;
+  readonly encryptionMethod: string;
   // The password for the encryption.
-  password: string;
+  readonly password: string;
+}
+
+// Data transfer allowance, measured in bytes. Must be a serializable JSON object.
+export interface DataLimit {
+  readonly bytes: number;
 }
 
 // AccessKey is what admins work with. It gives ProxyParams a name and identity.
 export interface AccessKey {
   // The unique identifier for this access key.
-  id: AccessKeyId;
+  readonly id: AccessKeyId;
   // Admin-controlled, editable name for this access key.
-  name: string;
-  // Used in metrics reporting to decouple from the real id. Can change.
-  metricsId: AccessKeyMetricsId;
+  readonly name: string;
   // Parameters to access the proxy
-  proxyParams: ProxyParams;
+  readonly proxyParams: ProxyParams;
+  // Whether the access key has reached the data transfer limit.
+  readonly reachedDataLimit: boolean;
+  // The key's current data limit.  If it exists, it overrides the server default data limit.
+  readonly dataLimit?: DataLimit;
+}
+
+export interface AccessKeyCreateParams {
+  // The unique identifier to give the access key. Throws if it exists.
+  readonly id?: AccessKeyId;
+  // The encryption method to use for the access key.
+  readonly encryptionMethod?: string;
+  // The name to give the access key.
+  readonly name?: string;
+  // The password to use for the access key.
+  readonly password?: string;
+  // The data transfer limit to apply to the access key.
+  readonly dataLimit?: DataLimit;
+  // The port number to use for the access key.
+  readonly portNumber?: number;
 }
 
 export interface AccessKeyRepository {
-  // Creates a new access key. Parameters are chosen automatically.
-  createNewAccessKey(): Promise<AccessKey>;
-  // Removes the access key given its id.  Returns true if successful.
-  removeAccessKey(id: AccessKeyId): boolean;
+  // Creates a new access key. Parameters are chosen automatically if not provided.
+  createNewAccessKey(params?: AccessKeyCreateParams): Promise<AccessKey>;
+  // Removes the access key given its id. Throws on failure.
+  removeAccessKey(id: AccessKeyId);
+  // Returns the access key with the given id. Throws on failure.
+  getAccessKey(id: AccessKeyId): AccessKey;
   // Lists all existing access keys
-  listAccessKeys(): IterableIterator<AccessKey>;
-  // Apply the specified update to the specified access key.
-  // Returns true if successful.
-  renameAccessKey(id: AccessKeyId, name: string): boolean;
-
-  // Gets the metrics id for a given Access Key.
-  getMetricsId(id: AccessKeyId): AccessKeyMetricsId|undefined;
+  listAccessKeys(): AccessKey[];
+  // Changes the port for new access keys.
+  setPortForNewAccessKeys(port: number): Promise<void>;
+  // Changes the hostname for access keys.
+  setHostname(hostname: string): void;
+  // Apply the specified update to the specified access key. Throws on failure.
+  renameAccessKey(id: AccessKeyId, name: string): void;
+  // Sets a data transfer limit for all access keys.
+  setDefaultDataLimit(limit: DataLimit): void;
+  // Removes the access key data transfer limit.
+  removeDefaultDataLimit(): void;
+  // Sets access key `id` to use the given custom data limit.
+  setAccessKeyDataLimit(id: AccessKeyId, limit: DataLimit): void;
+  // Removes the custom data limit from access key `id`.
+  removeAccessKeyDataLimit(id: AccessKeyId): void;
 }

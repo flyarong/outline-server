@@ -21,28 +21,24 @@ describe('PortProvider', () => {
     it('gets port over 1023', async () => {
       expect(await new get_port.PortProvider().reserveNewPort()).toBeGreaterThan(1023);
     });
+
     it('fails on double reservation', () => {
       const ports = new get_port.PortProvider();
       ports.addReservedPort(8080);
       expect(() => ports.addReservedPort(8080)).toThrowError();
     });
   });
-  describe('freePort', () => {
-    it('makes port available', () => {
-      const ports = new get_port.PortProvider();
-      ports.addReservedPort(8080);
-      ports.freePort(8080);
-      ports.addReservedPort(8080);
-    });
-  });
-  describe('reserverFirstFreePort', () => {
+
+  describe('reserveFirstFreePort', () => {
     it('returns free port', async () => {
       const ports = new get_port.PortProvider();
       const server = await listen();
-      expect(await ports.reserveFirstFreePort(server.address().port))
-          .toBeGreaterThan(server.address().port);
-      server.close();
+      const initialPort = (server.address() as net.AddressInfo).port;
+      const reservedPort = await ports.reserveFirstFreePort(initialPort);
+      await closeServer(server);
+      expect(reservedPort).toBeGreaterThan(initialPort);
     });
+
     it('respects reserved ports', async () => {
       const ports = new get_port.PortProvider();
       ports.addReservedPort(9090);
@@ -50,29 +46,58 @@ describe('PortProvider', () => {
       expect(await ports.reserveFirstFreePort(9090)).toBeGreaterThan(9091);
     });
   });
+
+  describe('reserveNewPort', () => {
+    it('Returns a port not in use', async () => {
+      // We run 100 times to try to trigger possible race conditions.
+      for (let i = 0; i < 100; ++i) {
+        const port = await new get_port.PortProvider().reserveNewPort();
+        expect(await get_port.isPortUsed(port)).toBeFalsy();
+      }
+    });
+  });
+});
+
+describe('isPortUsed', () => {
+  it('Identifies a port in use on IPV4', async () => {
+    const port = 12345;
+    const server = new net.Server();
+    const isPortUsed = await new Promise((resolve) => {
+      server.listen(port, '127.0.0.1', () => {
+        resolve(get_port.isPortUsed(port));
+      });
+    });
+    await closeServer(server);
+    expect(isPortUsed).toBeTruthy();
+  });
+  it('Identifies a port in use on IPV6', async () => {
+    const port = 12345;
+    const server = new net.Server();
+    const isPortUsed = await new Promise((resolve) => {
+      server.listen(port, '::1', () => {
+        resolve(get_port.isPortUsed(port));
+      });
+    });
+    await closeServer(server);
+    expect(isPortUsed).toBeTruthy();
+  });
+  it('Identifies a port not in use', async () => {
+    const port = await new get_port.PortProvider().reserveNewPort();
+    expect(await get_port.isPortUsed(port)).toBeFalsy();
+  });
 });
 
 function listen(): Promise<net.Server> {
   const server = net.createServer();
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, _reject) => {
     server.listen({host: 'localhost', port: 0, exclusive: true}, () => {
       resolve(server);
     });
   });
 }
 
-describe('getUsedPorts', () => {
-  it('returns used port', async () => {
-    const server = await listen();
-    const serverPort = server.address().port;
-    const usedPorts = await get_port.getUsedPorts();
-    expect(usedPorts).toContain(serverPort);
-
-    const onceClosed = new Promise((resolve, reject) => {
-      server.on('close', () => resolve());
-    });
-    server.close();
-    await onceClosed;
-    expect(await get_port.getUsedPorts()).not.toContain(serverPort);
+function closeServer(server: net.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close(err => err ? reject(err) : resolve());
   });
-});
+}
